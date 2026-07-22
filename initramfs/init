@@ -1,0 +1,30 @@
+#!/bin/busybox sh
+# PID 1 for the microVM. The kernel unpacks the initramfs into a tmpfs and
+# runs this script. eth0 is already configured by the kernel `ip=` boot arg.
+
+# Make all busybox applets available as /bin/<applet>.
+/bin/busybox --install -s /bin
+
+mkdir -p /proc /sys /dev
+mount -t proc     none /proc 2>/dev/null
+mount -t sysfs    none /sys  2>/dev/null
+mount -t devtmpfs none /dev  2>/dev/null
+
+# Bring loopback up (eth0 is handled by the kernel ip= arg).
+ip link set lo up 2>/dev/null || ifconfig lo up 2>/dev/null
+
+IP="$(ip -o -4 addr show eth0 2>/dev/null | awk '{print $4}')"
+[ -z "$IP" ] && IP="$(ifconfig eth0 2>/dev/null | awk '/inet addr/{print $2}' | sed 's/addr://')"
+
+cat <<BANNER
+
+  ====================================================
+   Firecracker microVM  -  busybox initramfs
+   kernel $(uname -r)   eth0 ${IP:-<none>}
+   ephemeral tmpfs rootfs; type 'reboot' to shut down
+  ====================================================
+
+BANNER
+
+# Hand off to an interactive shell with a controlling tty.
+exec setsid cttyhack /bin/sh 2>/dev/null || exec /bin/sh

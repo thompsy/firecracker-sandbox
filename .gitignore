@@ -1,0 +1,4 @@
+# Downloaded binaries and build artifacts (regenerated via `make setup`).
+/bin/
+/vm/
+/run/
