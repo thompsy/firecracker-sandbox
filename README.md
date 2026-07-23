@@ -22,11 +22,13 @@ make setup
 # Setup the network
 make net-up
 
-# Run a vm in the foreground and drop into its shell
+# Run a vm in the foreground and drop into its shell (CTRL-D in the guest to exit)
 make run ID=N
 
-# Run a vm in the background
+# ...or run it in the background, then list and stop it
 make detach ID=N
+make list
+make stop ID=N
 ```
 
 Every VM and the host are resolvable by name from inside a guest — `host`/`fc-host` plus
@@ -46,6 +48,23 @@ make run    ID=2                 # foreground console; guest at 172.16.0.4
 
 From VM 2's console you can reach the others by name, e.g. `ping fc-vm0`.
 From the host, `ping 172.16.0.4`. Tear down with `make stop ID=<n>`.
+
+## Commands
+
+The `make run`/`detach`/`stop`/`list` targets are thin wrappers around the `firevm`
+CLI (built to `bin/firevm` by `make build`). You can call it directly:
+
+| Command                       | What                                                      |
+|-------------------------------|-----------------------------------------------------------|
+| `sudo bin/firevm run <id>`    | boot on the console; blocks (CTRL-D in the guest to exit) |
+| `sudo bin/firevm detach <id>` | boot in the background (supervised)                       |
+| `sudo bin/firevm stop <id>`   | stop a backgrounded VM                                    |
+| `bin/firevm list`             | list running VMs                                          |
+| `firevm --help`               | full command help                                         |
+
+`run`/`detach`/`stop` need root (they create/remove taps via netlink); `list` does
+not. The bridge must exist first (`make net-up`). `make clean` tears everything down
+(all VMs, taps, bridge); `make distclean` also removes the downloaded binaries.
 
 ## Layout
 
