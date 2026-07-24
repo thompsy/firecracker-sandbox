@@ -1,9 +1,9 @@
 SHELL := /bin/bash
 ID ?= 0
 
-.PHONY: setup deps initramfs build net-up net-down run detach stop list clean distclean
+.PHONY: setup deps initramfs build bpf net-up net-down run detach stop list flowmon clean distclean
 
-setup: deps initramfs build  ## fetch binaries, build the initramfs + firevm (run once)
+setup: deps initramfs build  ## fetch binaries, build the initramfs + CLIs (run once)
 
 deps:                   ## download firecracker, kernel, busybox
 	@scripts/deps.sh
@@ -11,8 +11,12 @@ deps:                   ## download firecracker, kernel, busybox
 initramfs:              ## build vm/initramfs.cpio from busybox + initramfs/init
 	@scripts/build-initramfs.sh
 
-build:                  ## build the firevm CLI -> bin/firevm
+build:                  ## build the CLIs -> bin/firevm, bin/flowmon
 	@go build -o bin/firevm ./cmd/firevm
+	@go build -o bin/flowmon ./cmd/flowmon
+
+bpf:                    ## regenerate the eBPF objects from flow/*.c (needs clang)
+	@go generate ./flow
 
 net-up:                 ## create the shared VM bridge fc-br0 (sudo)
 	@scripts/host-net.sh up
@@ -31,6 +35,9 @@ stop:                   ## stop a backgrounded VM:      make stop ID=1
 
 list:                   ## list running VMs
 	@bin/firevm list
+
+flowmon: build          ## attach the eBPF flow monitor to a VM: make flowmon ID=0
+	@sudo bin/flowmon $(ID)
 
 clean:                  ## stop VMs, remove taps + bridge, clear run files (sudo)
 	@scripts/clean.sh
