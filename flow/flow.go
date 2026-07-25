@@ -19,6 +19,11 @@ type Monitor struct {
 type Sample struct {
 	Ifindex uint32
 	Egress  bool
+	SrcAddr uint32
+	SrcPort uint16
+	DstAddr uint32
+	DstPort uint16
+	Proto   uint8
 	Packets uint64
 	Bytes   uint64
 }
@@ -73,6 +78,11 @@ func (m *Monitor) Stats() ([]Sample, error) {
 		samples = append(samples, Sample{
 			Ifindex: key.Ifindex,
 			Egress:  key.Dir == 1,
+			SrcAddr: key.SrcAddr,
+			SrcPort: key.SrcPort,
+			DstAddr: key.DstAddr,
+			DstPort: key.DstPort,
+			Proto:   key.Proto,
 			Packets: val.Packets,
 			Bytes:   val.Bytes,
 		})
