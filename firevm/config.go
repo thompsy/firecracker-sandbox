@@ -55,4 +55,7 @@ func VMName(id int) string  { return fmt.Sprintf("fc-vm%d", id) }
 // Per-VM run files.
 func Socket(id int) string  { return filepath.Join(RunDir(), fmt.Sprintf("fc-%d.sock", id)) }
 func LogPath(id int) string { return filepath.Join(RunDir(), fmt.Sprintf("fc-%d.log", id)) }
-func PidPath(id int) string { return filepath.Join(RunDir(), fmt.Sprintf("fc-%d.pid", id)) }
+
+func DaemonSock() string      { return filepath.Join(RunDir(), "firevmd.sock") }
+func StateDir() string        { return filepath.Join(RunDir(), "vms") }
+func StatePath(id int) string { return filepath.Join(StateDir(), fmt.Sprintf("fc-%d.json", id)) }

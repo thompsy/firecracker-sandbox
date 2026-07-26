@@ -1,46 +1,57 @@
 SHELL := /bin/bash
 ID ?= 0
 
-.PHONY: setup deps initramfs build bpf net-up net-down run detach stop list flowmon clean distclean
+.PHONY: setup deps initramfs build bpf net-up net-down run stop list flowmon clean distclean
 
-setup: deps initramfs build  ## fetch binaries, build the initramfs + CLIs (run once)
+## fetch binaries, build initramfs, eBPF objects, and CLIs
+setup: deps initramfs bpf build
 
-deps:                   ## download firecracker, kernel, busybox
+
+## download firecracker, kernel, busybox
+deps:
 	@scripts/deps.sh
 
-initramfs:              ## build vm/initramfs.cpio from busybox + initramfs/init
+## build vm/initramfs.cpio from busybox and initramfs/init
+initramfs:
 	@scripts/build-initramfs.sh
 
-build:                  ## build the CLIs -> bin/firevm, bin/flowmon
+## build the CLIs -> bin/firevm, bin/flowmon
+build:
 	@go build -o bin/firevm ./cmd/firevm
 	@go build -o bin/flowmon ./cmd/flowmon
 
-bpf:                    ## regenerate the eBPF objects from flow/*.c (needs clang)
+## regenerate the eBPF objects from flow/*.c (requires clang)
+bpf:
 	@go generate ./flow
 
-net-up:                 ## create the shared VM bridge fc-br0 (sudo)
+## create the shared VM bridge fc-br0 (requires sudo)
+net-up:
 	@scripts/host-net.sh up
 
-net-down:               ## remove the VM bridge (sudo)
+## remove the VM bridge (requires sudo)
+net-down:
 	@scripts/host-net.sh down
 
-run: build              ## boot a VM on the console:   make run ID=0
+## launch a VM in the background: make run ID=0
+run: build
 	@sudo bin/firevm run $(ID)
 
-detach: build           ## boot a VM in the background: make detach ID=1
-	@sudo bin/firevm detach $(ID)
-
-stop:                   ## stop a backgrounded VM:      make stop ID=1
+## stop a running VM: make stop ID=0
+stop:
 	@sudo bin/firevm stop $(ID)
 
-list:                   ## list running VMs
+## list running VMs
+list:
 	@bin/firevm list
 
-flowmon: build          ## attach the eBPF flow monitor to a VM: make flowmon ID=0
+## attach the eBPF flow monitor to a VM: make flowmon ID=0
+flowmon: build
 	@sudo bin/flowmon $(ID)
 
-clean:                  ## stop VMs, remove taps + bridge, clear run files (sudo)
+## stop VMs, remove taps and bridge, clear run files (requires sudo)
+clean:
 	@scripts/clean.sh
 
-distclean: clean        ## also remove downloaded binaries, kernel, initramfs
+## also remove downloaded binaries, kernel, initramfs
+distclean: clean
 	@rm -rf bin/* vm/*

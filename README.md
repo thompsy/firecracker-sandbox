@@ -1,85 +1,82 @@
-# firecracker-test
+# firecracker-sandbox
 
-Spin up minimal [Firecracker](https://firecracker-microvm.github.io/) microVMs. Each VM boots a
-kernel and a small busybox initramfs straight to a shell on the serial console.
+Lightweight [Firecracker](https://firecracker-microvm.github.io/) microVM sandboxes with per-VM eBPF
+network observability with a small Go control plane for isolating (and watching) untrusted
+workloads.
 
-All VMs share one L2 bridge (`fc-br0`, subnet `172.16.0.0/24`), so they can talk to each other and
-to the host (`172.16.0.1`). There is no NAT and no default gateway in the guests, so the VMs have no
-internet access. The network is host and VMs only.
+Each VM boots a kernel and a tiny busybox initramfs and joins a private L2 network shared with the
+host and the other VMs. A tc/TCX eBPF program on each VM's tap device records its traffic as 5-tuple
+flows.
+
+This project is designed purely as a learning vehicle for me.
 
 ## Requirements
 
-- x86_64 Linux with KVM
-- Go 1.23+ (builds the `firevm` CLI), plus `curl`, `cpio` and `iptables`
-- `sudo`: the `firevm` launcher creates tap devices via netlink, so `make run`/`detach`/`stop` run it as root
+- x86_64 Linux with KVM (`/dev/kvm`)
+- Go 1.23+, and `clang`/LLVM (compiles the eBPF program)
+- `curl`, `cpio`, `iptables`
+- `sudo` for creating taps, the bridge and loading eBPF need root
 
 ## Quick start
 
 ```bash
-# Download deps (firecracker, kernel, busybox), build the initramfs + firevm CLI
+# download firecracker, kernel, and busybox and build the initramfs, eBPF, and CLIs
 make setup
 
-# Setup the network
+# create the shared bridge fc-br0 (requires sudo)
 make net-up
 
-# Run a vm in the foreground and drop into its shell (CTRL-D in the guest to exit)
-make run ID=N
+# launch VM 0 in the background. Console logged to run/fc-0.log. (requires sudo)
+make run  ID=0
 
-# ...or run it in the background, then list and stop it
-make detach ID=N
+# show running VMs
 make list
-make stop ID=N
+
+# stop it (requires sudo)
+make stop ID=0
+
+# tear everything down: VMs, taps, bridge (sudo)
+make clean
 ```
 
-Every VM and the host are resolvable by name from inside a guest — `host`/`fc-host` plus
-`fc-vm0`..`fc-vm15` — via an `/etc/hosts` baked into the initramfs. The set of names is `MAX_VMS`
-(default 16); raise it and `make initramfs` to bake in more.
+VMs run detached — watch a VM's console with `tail -f run/fc-0.log`.
 
-## Running more VMs
+## Networking
 
-Each VM `<id>` gets a tap on the shared bridge, a unique MAC and its own socket.
-All guests sit on `172.16.0.0/24`, addressed `172.16.0.<id+2>`:
+All VMs share one L2 bridge `fc-br0` on `172.16.0.0/24`:
+
+- host `172.16.0.1`  ·  VM `<id>` → `172.16.0.<id+2>`
+- No NAT and no default route in the guests → no internet by design. VMs reach each other and the
+  host only.
+
+Inside a guest, the host and every VM resolve by name (`host`, `fc-vm0`…`fc-vm15`) via an
+`/etc/hosts` baked into the initramfs (count is `MAX_VMS`, default 16).
+
+## eBPF flow monitor
+
+`flowmon` attaches a tc/TCX eBPF program to a VM's tap device and prints its traffic as per-flow
+counters, `(src ip:port → dst ip:port, proto, packets, bytes)`, keyed by interface, so every flow is
+attributed to a VM by construction.
 
 ```bash
-make detach ID=0                 # background; guest at 172.16.0.2
-make detach ID=1                 # background; guest at 172.16.0.3
-make run    ID=2                 # foreground console; guest at 172.16.0.4
+make run ID=0
+# attach and print counters (requires sudo). Ctrl-C to detach
+make flowmon ID=0
+
+# from the host, generate some TCP and watch the counters move
+nc -w1 172.16.0.2 4444
 ```
 
-From VM 2's console you can reach the others by name, e.g. `ping fc-vm0`.
-From the host, `ping 172.16.0.4`. Tear down with `make stop ID=<n>`.
-
-## Commands
-
-The `make run`/`detach`/`stop`/`list` targets are thin wrappers around the `firevm`
-CLI (built to `bin/firevm` by `make build`). You can call it directly:
-
-| Command                       | What                                                      |
-|-------------------------------|-----------------------------------------------------------|
-| `sudo bin/firevm run <id>`    | boot on the console; blocks (CTRL-D in the guest to exit) |
-| `sudo bin/firevm detach <id>` | boot in the background (supervised)                       |
-| `sudo bin/firevm stop <id>`   | stop a backgrounded VM                                    |
-| `bin/firevm list`             | list running VMs                                          |
-| `firevm --help`               | full command help                                         |
-
-`run`/`detach`/`stop` need root (they create/remove taps via netlink); `list` does
-not. The bridge must exist first (`make net-up`). `make clean` tears everything down
-(all VMs, taps, bridge); `make distclean` also removes the downloaded binaries.
+The program is `flow/flowcount.c` (compiled by `bpf2go`, regenerate with `make bpf`); `flow/flow.go`
+loads it and attaches via TCX (host kernel ≥ 6.6).
 
 ## Layout
 
-| Path                     | What                                                        |
-|--------------------------|-------------------------------------------------------------|
-| `bin/`                   | firecracker + jailer + busybox (downloaded)                 |
-| `vm/`                    | guest kernel + `initramfs.cpio` (built)                     |
-| `initramfs/init`         | the guest's PID 1 — **edit this to change guest behavior**  |
-| `firevm/`                | Go package: VM lifecycle via the SDK (config, tap, launch)  |
-| `cmd/firevm/`            | the `firevm` CLI: run / detach / stop / list                |
-| `scripts/`               | deps / build-initramfs / networking (bridge) / clean        |
-| `run/`                   | per-instance sockets, logs, pidfiles                        |
-
-## Where this is headed
-
-The guest is defined entirely by `initramfs/init` plus whatever binaries land in the initramfs. To
-boot straight into your own program (e.g. a static Go + eBPF binary), drop it into the staging tree
-in `scripts/build-initramfs.sh` and either call it from `init` or make it PID 1 directly.
+| Path                     | What                                                                       |
+|--------------------------|----------------------------------------------------------------------------|
+| `firevm/`                | Go package: VM config/scheme, netlink taps, detached launch, on-disk state |
+| `cmd/firevm/`            | the `firevm` CLI: `run` / `stop` / `list`                                  |
+| `flow/` + `cmd/flowmon/` | eBPF flow monitor: tc/TCX program + loader + CLI                           |
+| `initramfs/init`         | the guest's PID 1 (busybox) — edit to change guest behaviour               |
+| `scripts/` + `Makefile`  | deps / build-initramfs / bridge / clean                                    |
+| `bin/`, `vm/`, `run/`    | downloaded / built / runtime artifacts (gitignored)                        |
