@@ -27,7 +27,7 @@ make setup
 make net-up
 
 # launch VM 0 in the background. Console logged to run/fc-0.log. (requires sudo)
-make run  ID=0
+make run ID=0
 
 # show running VMs
 make list

@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 ID ?= 0
 
-.PHONY: setup deps initramfs build bpf net-up net-down run stop list flowmon clean distclean
+.PHONY: setup deps initramfs build bpf net-up net-down daemon run stop list flowmon clean distclean
 
 ## fetch binaries, build initramfs, eBPF objects, and CLIs
 setup: deps initramfs bpf build
@@ -18,6 +18,7 @@ initramfs:
 ## build the CLIs -> bin/firevm, bin/flowmon
 build:
 	@go build -o bin/firevm ./cmd/firevm
+	@go build -o bin/firevmd ./cmd/firevmd
 	@go build -o bin/flowmon ./cmd/flowmon
 
 ## regenerate the eBPF objects from flow/*.c (requires clang)
@@ -32,6 +33,10 @@ net-up:
 net-down:
 	@scripts/host-net.sh down
 
+## run the control-plane daemon in the foreground (requires sudo)
+daemon: build
+	@sudo bin/firevmd
+
 ## launch a VM in the background: make run ID=0
 run: build
 	@sudo bin/firevm run $(ID)
@@ -42,7 +47,7 @@ stop:
 
 ## list running VMs
 list:
-	@bin/firevm list
+	@sudo bin/firevm list
 
 ## attach the eBPF flow monitor to a VM: make flowmon ID=0
 flowmon: build

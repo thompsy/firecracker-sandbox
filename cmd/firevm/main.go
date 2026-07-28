@@ -1,40 +1,71 @@
-// Command firevm launches and manages minimal Firecracker microVMs.
-//
-//	firevm run <id>      boot a VM on this terminal's serial console
-//	firevm detach <id>   boot a VM in the background (supervised)
-//	firevm stop <id>     stop a backgrounded VM
-//	firevm list          list running VMs
-//
-// It creates the per-VM tap via netlink, so it must run as root. The bridge
-// must already exist (make net-up).
+// Command firevm is a thin client for the firevmd control-plane daemon. It
+// sends run/stop/list requests over the daemon's unix socket; firevmd (which
+// runs as root) does the actual VM management.
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"strconv"
-	"syscall"
+	"text/tabwriter"
 
 	"github.com/urfave/cli/v3"
 
+	"github.com/thompsy/firecracker-sandbox/api"
 	"github.com/thompsy/firecracker-sandbox/firevm"
 )
+
+// baseURL's host is ignored — the transport's DialContext always dials the
+// daemon's unix socket. The URL just has to parse.
+const baseURL = "http://unix"
+
+func getClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", firevm.DaemonSock())
+			},
+		},
+	}
+}
+
+// request issues an HTTP request to firevmd over its unix socket. The caller
+// owns resp.Body.
+func request(method, path string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequest(method, baseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := getClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("cannot reach firevmd (is it running? try: sudo bin/firevmd): %w", err)
+	}
+	return resp, nil
+}
 
 func main() {
 	cmd := &cli.Command{
 		Name:  "firevm",
-		Usage: "launch and manage minimal Firecracker microVMs",
+		Usage: "launch and manage minimal Firecracker microVMs (client for firevmd)",
 		Commands: []*cli.Command{
 			{
 				Name:      "run",
-				Usage:     "boot a VM in the background",
+				Usage:     "launch a VM in the background",
 				ArgsUsage: "<id>",
 				Action:    withID(run),
 			},
 			{
 				Name:      "stop",
-				Usage:     "stop a backgrounded VM",
+				Usage:     "stop a running VM",
 				ArgsUsage: "<id>",
 				Action:    withID(stop),
 			},
@@ -45,6 +76,7 @@ func main() {
 			},
 		},
 	}
+
 	if err := cmd.Run(context.Background(), os.Args); err != nil {
 		fmt.Fprintln(os.Stderr, "firevm:", err)
 		os.Exit(1)
@@ -67,61 +99,78 @@ func withID(fn func(context.Context, int) error) cli.ActionFunc {
 	}
 }
 
-// run boots a VM on this terminal's console and blocks until it exits.
-func run(ctx context.Context, id int) error {
-	fmt.Printf("Booting VM %d (%s) on the serial console. Guest IP: %s\n",
-		id, firevm.VMName(id), firevm.GuestIP(id))
-	fmt.Println("Type CTRL-D inside the VM to shut down and return here.")
-	fmt.Println()
-
-	state, err := firevm.Launch(ctx, id)
+// run asks firevmd to launch VM id in the background.
+func run(_ context.Context, id int) error {
+	body, err := json.Marshal(api.LaunchRequest{ID: id})
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Started VM: %#+v\n", state)
+	resp, err := request(http.MethodPost, "/vms", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		return fmt.Errorf("launch failed (%s): %s", resp.Status, bytes.TrimSpace(b))
+	}
+
+	var s firevm.State
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	fmt.Printf("started VM %d (%s) — pid %d, ip %s\n", s.ID, s.Name, s.Pid, s.GuestIP)
 	return nil
 }
 
-// stop signals a backgrounded VM's supervisor to shut down (which cleans up its
-// tap and pidfile). If no supervisor pidfile exists, it cleans the tap directly.
+// stop asks firevmd to stop VM id.
 func stop(_ context.Context, id int) error {
-	s, err := firevm.LoadState(firevm.StatePath(id))
+	resp, err := request(http.MethodDelete, "/vms/"+strconv.Itoa(id), nil)
 	if err != nil {
 		return err
 	}
+	defer resp.Body.Close()
 
-	if err := syscall.Kill(s.Pid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
-		return fmt.Errorf("signal supervisor pid %d: %w", s.Pid, err)
+	switch resp.StatusCode {
+	case http.StatusNoContent:
+		fmt.Printf("stopped VM %d\n", id)
+		return nil
+	case http.StatusNotFound:
+		return fmt.Errorf("no VM with id %d", id)
+	default:
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("stop failed (%s): %s", resp.Status, bytes.TrimSpace(b))
 	}
-	err = firevm.RemoveState(id)
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("VM %d (pid %d) stopping.\n", id, s.Pid)
-	return nil
 }
 
-// list prints the VMs that have a supervisor pidfile in the run dir.
+// list prints the VMs firevmd is managing.
 func list() error {
-	states, err := firevm.AllStates()
+	resp, err := request(http.MethodGet, "/vms", nil)
 	if err != nil {
 		return err
 	}
+	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("list failed (%s): %s", resp.Status, bytes.TrimSpace(b))
+	}
+
+	var states []firevm.State
+	if err := json.NewDecoder(resp.Body).Decode(&states); err != nil {
+		return err
+	}
 	if len(states) == 0 {
 		fmt.Println("no VMs running")
 		return nil
 	}
 
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tNAME\tIP\tPID")
 	for _, s := range states {
-		fmt.Printf("%#+v\n", s)
-		status := "dead"
-		if _, err := os.Stat(fmt.Sprintf("/proc/%d", s.Pid)); err == nil {
-			status = "running"
-		}
-
-		fmt.Printf("%s - %s", s, status)
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%d\n", s.ID, s.Name, s.GuestIP, s.Pid)
 	}
+	tw.Flush()
 	return nil
 }

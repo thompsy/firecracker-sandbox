@@ -30,6 +30,7 @@ type State struct {
 	BootedAt time.Time
 }
 
+// String returns the string representation of the State.
 func (s *State) String() string {
 	return fmt.Sprintf("%-4d %-8d %-12s %s %s\n", s.ID, s.Pid, s.GuestIP, s.Name, s.BootedAt)
 }
@@ -40,17 +41,17 @@ func (s *State) String() string {
 func BuildConfig(id int) firecracker.Config {
 	bootArgs := fmt.Sprintf(
 		"console=ttyS0 reboot=k panic=1 pci=off ip=%s:::%s:%s:eth0:off",
-		GuestIP(id), Netmask, VMName(id),
+		guestIP(id), Netmask, VMName(id),
 	)
 	return firecracker.Config{
 		SocketPath:      Socket(id),
-		KernelImagePath: Kernel(),
-		InitrdPath:      Initramfs(),
+		KernelImagePath: kernel(),
+		InitrdPath:      initramfs(),
 		KernelArgs:      bootArgs,
 		Drives:          nil,
 		NetworkInterfaces: firecracker.NetworkInterfaces{{
 			StaticConfiguration: &firecracker.StaticNetworkConfiguration{
-				MacAddress:  MAC(id),
+				MacAddress:  mac(id),
 				HostDevName: TapName(id),
 			},
 		}},
@@ -78,7 +79,7 @@ func Launch(ctx context.Context, id int) (*State, error) {
 		return nil, err
 	}
 
-	log, err := os.Create(LogPath(id))
+	log, err := os.Create(logPath(id))
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -87,7 +88,7 @@ func Launch(ctx context.Context, id int) (*State, error) {
 	defer log.Close()
 
 	cmd := firecracker.VMCommandBuilder{}.
-		WithBin(FCBin()).
+		WithBin(fcBinary()).
 		WithSocketPath(Socket(id)).
 		WithStdout(log).
 		WithStderr(log).
@@ -128,19 +129,17 @@ func Launch(ctx context.Context, id int) (*State, error) {
 		Pid:      pid,
 		Socket:   Socket(id),
 		Tap:      TapName(id),
-		GuestIP:  GuestIP(id),
-		MAC:      MAC(id),
+		GuestIP:  guestIP(id),
+		MAC:      mac(id),
 		Name:     VMName(id),
 		BootedAt: time.Now(),
 	}
-	err = SaveState(s)
-	if err != nil {
-		return nil, err
-	}
-
+	// Persistence is the daemon's responsibility (it owns the on-disk registry),
+	// so Launch just boots the VM and returns the facts.
 	return s, nil
 }
 
+// SaveState writes out the given State to its associated file.
 func SaveState(s *State) error {
 	err := os.MkdirAll(StateDir(), 0o755)
 	if err != nil {
@@ -154,21 +153,7 @@ func SaveState(s *State) error {
 	return os.WriteFile(StatePath(s.ID), b, 0o644)
 }
 
-// TODO I'm not sure if i need this one really
-func LoadStateFromId(id int) (*State, error) {
-	b, err := os.ReadFile(StatePath(id))
-	if err != nil {
-		return nil, err
-	}
-
-	var s State
-	err = json.Unmarshal(b, &s)
-	if err != nil {
-		return nil, err
-	}
-	return &s, nil
-}
-
+// LoadState loads a State from the given path.
 func LoadState(path string) (*State, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -183,10 +168,12 @@ func LoadState(path string) (*State, error) {
 	return &s, nil
 }
 
+// RemoveState removes file state file for the given VM.
 func RemoveState(id int) error {
 	return os.Remove(StatePath(id))
 }
 
+// AllStates reads all saved state files from disk.
 func AllStates() ([]*State, error) {
 	paths, err := filepath.Glob(fmt.Sprintf("%s/fc-*.json", StateDir()))
 	if err != nil {
