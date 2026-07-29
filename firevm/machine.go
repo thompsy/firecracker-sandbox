@@ -2,6 +2,7 @@ package firevm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -38,11 +39,17 @@ func (s *State) String() string {
 // BuildConfig returns the firecracker configuration for VM id. Boot is initrd-only and networking
 // is a static tap on the shared bridge, addressed via the kernel ip= arg with no gateway (i.e. no
 // internet).
-func BuildConfig(id int) firecracker.Config {
+func BuildConfig(id int, cmd string) firecracker.Config {
 	bootArgs := fmt.Sprintf(
 		"console=ttyS0 reboot=k panic=1 pci=off ip=%s:::%s:%s:eth0:off",
 		guestIP(id), Netmask, VMName(id),
 	)
+
+	// If we've passed a command line, encode that in base64 (so the kernel doesn't split on
+	// spaces) and append it to bootArgs
+	if cmd != "" {
+		bootArgs += " firevm_cmd=" + base64.StdEncoding.EncodeToString([]byte(cmd))
+	}
 	return firecracker.Config{
 		SocketPath:      Socket(id),
 		KernelImagePath: kernel(),
@@ -64,7 +71,7 @@ func BuildConfig(id int) firecracker.Config {
 
 // Launch sets up the VM's tap, then starts firecracker in detached mode. Stdout and stderr are
 // wired to a log file.
-func Launch(ctx context.Context, id int) (*State, error) {
+func Launch(ctx context.Context, id int, cmdLine string) (*State, error) {
 	err := SetupTap(id)
 	if err != nil {
 		return nil, err
@@ -97,7 +104,7 @@ func Launch(ctx context.Context, id int) (*State, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid: true,
 	}
-	cfg := BuildConfig(id)
+	cfg := BuildConfig(id, cmdLine)
 
 	// daemon SIGTERM must NOT reach the VM
 	cfg.ForwardSignals = []os.Signal{}

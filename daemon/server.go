@@ -70,7 +70,7 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	state, err := firevm.Launch(context.Background(), req.ID)
+	state, err := firevm.Launch(context.Background(), req.ID, req.Cmd)
 	if err != nil {
 		slog.Error("launch failed", "id", req.ID, "err", err)
 		http.Error(w, "failed to launch VM", http.StatusInternalServerError)
@@ -85,7 +85,7 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.reg.Add(&VM{State: state})
-	slog.Info("launched vm", "id", state.ID, "pid", state.Pid, "ip", state.GuestIP)
+	slog.Info("launched vm", "id", state.ID, "pid", state.Pid, "ip", state.GuestIP, "cmd", req.Cmd)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

@@ -15,7 +15,7 @@ deps:
 initramfs:
 	@scripts/build-initramfs.sh
 
-## build the CLIs -> bin/firevm, bin/flowmon
+## build the CLIs -> bin/firevm, bin/firevmd, bin/flowmon
 build:
 	@go build -o bin/firevm ./cmd/firevm
 	@go build -o bin/firevmd ./cmd/firevmd

@@ -61,7 +61,16 @@ func main() {
 				Name:      "run",
 				Usage:     "launch a VM in the background",
 				ArgsUsage: "<id>",
-				Action:    withID(run),
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "cmd", Usage: "command to run in the VM at boot"},
+				},
+				Action: func(ctx context.Context, c *cli.Command) error {
+					id, err := parseID(c)
+					if err != nil {
+						return err
+					}
+					return run(ctx, id, c.String("cmd"))
+				},
 			},
 			{
 				Name:      "stop",
@@ -83,25 +92,37 @@ func main() {
 	}
 }
 
+// parseID parses and validates the single positional <id> argument.
+func parseID(c *cli.Command) (int, error) {
+	if c.Args().Len() != 1 {
+		return 0, fmt.Errorf("expected a single <id> argument")
+	}
+	arg := c.Args().First()
+	id, err := strconv.Atoi(arg)
+	if err != nil || id < 0 {
+		return 0, fmt.Errorf("invalid id %q", arg)
+	}
+	return id, nil
+}
+
 // withID adapts a handler taking a single VM id into a cli.ActionFunc, parsing
 // and validating the one positional <id> argument.
 func withID(fn func(context.Context, int) error) cli.ActionFunc {
 	return func(ctx context.Context, c *cli.Command) error {
-		if c.Args().Len() != 1 {
-			return fmt.Errorf("expected a single <id> argument")
-		}
-		arg := c.Args().First()
-		id, err := strconv.Atoi(arg)
-		if err != nil || id < 0 {
-			return fmt.Errorf("invalid id %q", arg)
+		id, err := parseID(c)
+		if err != nil {
+			return err
 		}
 		return fn(ctx, id)
 	}
 }
 
 // run asks firevmd to launch VM id in the background.
-func run(_ context.Context, id int) error {
-	body, err := json.Marshal(api.LaunchRequest{ID: id})
+func run(_ context.Context, id int, cmd string) error {
+	body, err := json.Marshal(api.LaunchRequest{
+		ID:  id,
+		Cmd: cmd,
+	})
 	if err != nil {
 		return err
 	}

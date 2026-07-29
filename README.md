@@ -8,6 +8,9 @@ Each VM boots a kernel and a tiny busybox initramfs and joins a private L2 netwo
 host and the other VMs. A tc/TCX eBPF program on each VM's tap device records its traffic as 5-tuple
 flows.
 
+VM lifecycle is owned by a small root daemon, `firevmd`. The `firevm` CLI is a thin client that
+drives it over a unix socket.
+
 This project is designed purely as a learning vehicle for me.
 
 ## Requirements
@@ -15,7 +18,7 @@ This project is designed purely as a learning vehicle for me.
 - x86_64 Linux with KVM (`/dev/kvm`)
 - Go 1.23+, and `clang`/LLVM (compiles the eBPF program)
 - `curl`, `cpio`, `iptables`
-- `sudo` for creating taps, the bridge and loading eBPF need root
+- `sudo`: creating taps, the bridge, and loading eBPF need root
 
 ## Quick start
 
@@ -26,20 +29,28 @@ make setup
 # create the shared bridge fc-br0 (requires sudo)
 make net-up
 
-# launch VM 0 in the background. Console logged to run/fc-0.log. (requires sudo)
+# start the control-plane daemon in the foreground (requires sudo)
+make daemon
+
+# --- in another terminal ---
+# launch VM 0 in the background; console logged to run/fc-0.log (requires sudo)
 make run ID=0
+
+# or launch it running a command at boot:
+sudo bin/firevm run --cmd "nc -l -p 4444" 0
 
 # show running VMs
 make list
 
-# stop it (requires sudo)
+# stop it
 make stop ID=0
 
 # tear everything down: VMs, taps, bridge (sudo)
 make clean
 ```
 
-VMs run detached — watch a VM's console with `tail -f run/fc-0.log`.
+VMs run detached — watch a VM's console with `tail -f run/fc-0.log`, and use `--cmd` to run a
+workload at boot.
 
 ## Networking
 
@@ -75,7 +86,10 @@ loads it and attaches via TCX (host kernel ≥ 6.6).
 | Path                     | What                                                                       |
 |--------------------------|----------------------------------------------------------------------------|
 | `firevm/`                | Go package: VM config/scheme, netlink taps, detached launch, on-disk state |
-| `cmd/firevm/`            | the `firevm` CLI: `run` / `stop` / `list`                                  |
+| `daemon/`                | control-plane daemon: in-memory registry + HTTP server over a unix socket  |
+| `cmd/firevmd/`           | the `firevmd` daemon entrypoint                                             |
+| `cmd/firevm/`            | the `firevm` CLI (client for firevmd): `run` / `stop` / `list`             |
+| `api/`                   | request/response types shared by firevm and firevmd                        |
 | `flow/` + `cmd/flowmon/` | eBPF flow monitor: tc/TCX program + loader + CLI                           |
 | `initramfs/init`         | the guest's PID 1 (busybox) — edit to change guest behaviour               |
 | `scripts/` + `Makefile`  | deps / build-initramfs / bridge / clean                                    |
