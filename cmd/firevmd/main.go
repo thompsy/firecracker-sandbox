@@ -8,7 +8,15 @@ import (
 )
 
 func main() {
-	err := daemon.NewServer().Run()
+	// TODO reconcile here first!
+	s := daemon.NewServer()
+	err := s.Reconcile()
+	if err != nil {
+		slog.Error("failed to reconcile", "error", err)
+		os.Exit(1)
+	}
+
+	err = s.Run()
 	if err != nil {
 		slog.Error("failed to run", "error", err)
 		os.Exit(1)

@@ -25,6 +25,28 @@ func NewServer() *Server {
 	}
 }
 
+// Reconcile builds the registry from on-disk and running process state in case of crash.
+func (s *Server) Reconcile() error {
+	states, err := firevm.AllStates()
+	if err != nil {
+		return err
+	}
+
+	for _, state := range states {
+		vm := NewVM(state)
+		if vm.Alive() {
+			s.reg.Add(vm)
+			slog.Info("recovered vm", "id", state.ID, "pid", state.Pid)
+			continue
+		}
+		slog.Info("reaping dead vm", "id", state.ID, "pid", state.Pid)
+		reap(state.ID)
+
+	}
+
+	return nil
+}
+
 func (s *Server) Run() error {
 	// Remove any existing socket
 	err := os.Remove(firevm.DaemonSock())
@@ -84,7 +106,7 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.reg.Add(&VM{State: state})
+	s.reg.Add(NewVM(state))
 	slog.Info("launched vm", "id", state.ID, "pid", state.Pid, "ip", state.GuestIP, "cmd", req.Cmd)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -120,7 +142,15 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = firevm.DelTap(id)
+	reap(id)
+
+	s.reg.Remove(id)
+	slog.Info("stopped vm", "id", id, "pid", state.Pid)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func reap(id int) {
+	err := firevm.DelTap(id)
 	if err != nil {
 		slog.Error("failed to remove TAP", "id", id, "err", err)
 	}
@@ -134,8 +164,4 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Error("failed to remove state", "id", id, "err", err)
 	}
-
-	s.reg.Remove(id)
-	slog.Info("stopped vm", "id", id, "pid", state.Pid)
-	w.WriteHeader(http.StatusNoContent)
 }

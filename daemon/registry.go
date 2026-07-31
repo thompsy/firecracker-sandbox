@@ -1,14 +1,38 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"sync"
+	"time"
 
+	"github.com/firecracker-microvm/firecracker-go-sdk/client/operations"
+
+	"github.com/firecracker-microvm/firecracker-go-sdk"
+	"github.com/firecracker-microvm/firecracker-go-sdk/client"
+	"github.com/go-openapi/strfmt"
 	"github.com/thompsy/firecracker-sandbox/firevm"
 )
 
 type VM struct {
-	State *firevm.State
+	State  *firevm.State
+	Client *client.Firecracker
+}
+
+func NewVM(state *firevm.State) *VM {
+	return &VM{
+		State:  state,
+		Client: client.New(firecracker.NewUnixSocketTransport(state.Socket, nil, false), strfmt.Default),
+	}
+}
+
+// Alive reports whether the VM's firecracker is still running and answering its API socket.
+func (vm *VM) Alive() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	_, err := vm.Client.Operations.DescribeInstance(operations.NewDescribeInstanceParamsWithContext(ctx))
+	return err == nil
 }
 
 type registry struct {
