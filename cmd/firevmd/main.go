@@ -8,7 +8,6 @@ import (
 )
 
 func main() {
-	// TODO reconcile here first!
 	s := daemon.NewServer()
 	err := s.Reconcile()
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -190,8 +191,8 @@ func AllStates() ([]*State, error) {
 	for _, path := range paths {
 		s, err := LoadState(path)
 		if err != nil {
-			// TODO should we skip here or error?
-			return nil, err
+			slog.Warn("failed to load state file", "path", path, "error", err)
+			continue
 		}
 		states = append(states, s)
 	}
