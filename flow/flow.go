@@ -11,8 +11,10 @@ import (
 
 // Monitor holds the loaded flowcount program/map and its TCX attachments.
 type Monitor struct {
-	objs  flowcountObjects
-	links []link.Link
+	objs flowcountObjects
+
+	// links maps an ifindex to its TCX links, one ingress and one egress per interface.
+	links map[uint32][]link.Link
 }
 
 // Sample is a per-interface, per-direction traffic counter.
@@ -33,11 +35,19 @@ func Load() (*Monitor, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("remove memlock: %w", err)
 	}
-	m := &Monitor{}
+	m := &Monitor{
+		links: make(map[uint32][]link.Link),
+	}
 	if err := loadFlowcountObjects(&m.objs, nil); err != nil {
 		return nil, fmt.Errorf("load bpf objects: %w", err)
 	}
 	return m, nil
+}
+
+// tcxHook pairs a flowcount program with the TCX direction to attach it on.
+type tcxHook struct {
+	prog   *ebpf.Program
+	attach ebpf.AttachType
 }
 
 // Attach hooks the counter onto both directions of the named interface via TCX.
@@ -46,23 +56,39 @@ func (m *Monitor) Attach(ifname string) error {
 	if err != nil {
 		return fmt.Errorf("interface %q: %w", ifname, err)
 	}
-	for _, a := range []struct {
-		prog   *ebpf.Program
-		attach ebpf.AttachType
-	}{
+	for _, h := range []tcxHook{
 		{m.objs.CountIngress, ebpf.AttachTCXIngress},
 		{m.objs.CountEgress, ebpf.AttachTCXEgress},
 	} {
 		l, err := link.AttachTCX(link.TCXOptions{
 			Interface: iface.Index,
-			Program:   a.prog,
-			Attach:    a.attach,
+			Program:   h.prog,
+			Attach:    h.attach,
 		})
 		if err != nil {
 			return fmt.Errorf("attach TCX to %s: %w", ifname, err)
 		}
-		m.links = append(m.links, l)
+		idx := uint32(iface.Index)
+		m.links[idx] = append(m.links[idx], l)
 	}
+	return nil
+}
+
+func (m *Monitor) Detach(ifname string) error {
+	iface, err := net.InterfaceByName(ifname)
+	if err != nil {
+		return fmt.Errorf("interface %q: %w", ifname, err)
+	}
+	idx := uint32(iface.Index)
+	ls, ok := m.links[idx]
+	if !ok {
+		// Nothing attached so nothing to detach
+		return nil
+	}
+	for _, l := range ls {
+		_ = l.Close()
+	}
+	delete(m.links, idx)
 	return nil
 }
 
@@ -92,8 +118,10 @@ func (m *Monitor) Stats() ([]Sample, error) {
 
 // Close detaches the programs and releases the objects.
 func (m *Monitor) Close() error {
-	for _, l := range m.links {
-		_ = l.Close()
+	for _, ls := range m.links {
+		for _, l := range ls {
+			_ = l.Close()
+		}
 	}
 	return m.objs.Close()
 }

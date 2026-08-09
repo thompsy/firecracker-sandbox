@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -26,6 +27,7 @@ type State struct {
 	Socket string
 
 	Tap      string
+	Ifindex  int
 	GuestIP  string
 	MAC      string
 	Name     string
@@ -80,6 +82,13 @@ func Launch(ctx context.Context, id int, cmdLine string) (*State, error) {
 	cleanup := func() {
 		_ = DelTap(id)
 		_ = os.Remove(Socket(id))
+	}
+
+	// The tap now exists; grab its ifindex so State can carry it for flow correlation.
+	iface, err := net.InterfaceByName(TapName(id))
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("resolve tap %s: %w", TapName(id), err)
 	}
 
 	err = os.MkdirAll(RunDir(), 0o755)
@@ -137,6 +146,7 @@ func Launch(ctx context.Context, id int, cmdLine string) (*State, error) {
 		Pid:      pid,
 		Socket:   Socket(id),
 		Tap:      TapName(id),
+		Ifindex:  iface.Index,
 		GuestIP:  guestIP(id),
 		MAC:      mac(id),
 		Name:     VMName(id),
@@ -191,7 +201,7 @@ func AllStates() ([]*State, error) {
 	for _, path := range paths {
 		s, err := LoadState(path)
 		if err != nil {
-			slog.Warn("failed to load state file", "path", path, "error", err)
+			slog.Warn("failed to load state file", "path", path, "err", err)
 			continue
 		}
 		states = append(states, s)

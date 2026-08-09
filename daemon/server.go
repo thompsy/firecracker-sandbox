@@ -13,10 +13,12 @@ import (
 
 	"github.com/thompsy/firecracker-sandbox/api"
 	"github.com/thompsy/firecracker-sandbox/firevm"
+	"github.com/thompsy/firecracker-sandbox/flow"
 )
 
 type Server struct {
-	reg *registry
+	reg  *registry
+	flow *flow.Monitor
 }
 
 func NewServer() *Server {
@@ -27,6 +29,12 @@ func NewServer() *Server {
 
 // Reconcile builds the registry from on-disk and running process state in case of crash.
 func (s *Server) Reconcile() error {
+	f, err := flow.Load()
+	if err != nil {
+		return err
+	}
+	s.flow = f
+
 	states, err := firevm.AllStates()
 	if err != nil {
 		return err
@@ -36,11 +44,16 @@ func (s *Server) Reconcile() error {
 		vm := NewVM(state)
 		if vm.Alive() {
 			s.reg.Add(vm)
+			err = s.flow.Attach(vm.State.Tap)
+			if err != nil {
+				slog.Warn("failed to attach flow monitor", "id", state.ID, "err", err)
+			}
+
 			slog.Info("recovered vm", "id", state.ID, "pid", state.Pid)
 			continue
 		}
 		slog.Info("reaping dead vm", "id", state.ID, "pid", state.Pid)
-		reap(state.ID)
+		s.reap(state.ID)
 
 	}
 
@@ -70,6 +83,7 @@ func (s *Server) Run() error {
 	mux.HandleFunc("POST /vms", s.handleLaunch)
 	mux.HandleFunc("GET /vms", s.handleList)
 	mux.HandleFunc("DELETE /vms/{id}", s.handleStop)
+	mux.HandleFunc("GET /stats", s.handleStats)
 
 	srv := &http.Server{Handler: mux}
 	return srv.Serve(ln)
@@ -83,10 +97,11 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reject a launch for an id that's already running, so we don't clobber a
-	// live VM's tap/socket. NOTE: this check and the Add below aren't atomic, so
-	// two truly-concurrent launches of the same id could still race — a
-	// reserve-under-lock in the registry would close that. Fine for now.
+	// Reject a launch for an id that's already running, so we don't clobber a live VM's
+	// tap/socket.
+	//
+	//NOTE: this check and the Add below aren't atomic, so two truly-concurrent launches of the same id
+	//could still race. A reserve-under-lock in the registry would close that. Fine for now.
 	if _, err := s.reg.Get(req.ID); err == nil {
 		http.Error(w, "vm already exists", http.StatusConflict)
 		return
@@ -97,6 +112,11 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		slog.Error("launch failed", "id", req.ID, "err", err)
 		http.Error(w, "failed to launch VM", http.StatusInternalServerError)
 		return
+	}
+
+	err = s.flow.Attach(firevm.TapName(state.ID))
+	if err != nil {
+		slog.Warn("failed to attach flow monitor", "id", req.ID, "err", err)
 	}
 
 	err = firevm.SaveState(state)
@@ -122,6 +142,51 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(states)
 }
 
+// handleStats returns the current eBPF flow counters, each attributed to the VM
+// that owns the tap the flow was seen on.
+func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	samples, err := s.flow.Stats()
+	if err != nil {
+		slog.Error("failed to read flow stats", "err", err)
+		http.Error(w, "failed to read flow stats", http.StatusInternalServerError)
+		return
+	}
+
+	// ifindex -> VM, so each flow can be attributed by the tap it was seen on.
+	byIfindex := make(map[uint32]*firevm.State)
+	for _, st := range s.reg.List() {
+		byIfindex[uint32(st.Ifindex)] = st
+	}
+
+	stats := make([]api.FlowStat, 0, len(samples))
+	for _, sample := range samples {
+		vm, ok := byIfindex[sample.Ifindex]
+		if !ok {
+			continue // a flow for a tap we no longer track — skip
+		}
+		dir := "in"
+		if sample.Egress {
+			dir = "out"
+		}
+		stats = append(stats, api.FlowStat{
+			VMID:    vm.ID,
+			VM:      vm.Name,
+			Dir:     dir,
+			SrcIP:   flow.IPv4(sample.SrcAddr).String(),
+			SrcPort: flow.Port(sample.SrcPort),
+			DstIP:   flow.IPv4(sample.DstAddr).String(),
+			DstPort: flow.Port(sample.DstPort),
+			Proto:   flow.Proto(sample.Proto),
+			Packets: sample.Packets,
+			Bytes:   sample.Bytes,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(stats)
+}
+
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(r.PathValue("id"))
 	if err != nil {
@@ -142,15 +207,20 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reap(id)
+	s.reap(id)
 
 	s.reg.Remove(id)
 	slog.Info("stopped vm", "id", id, "pid", state.Pid)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func reap(id int) {
-	err := firevm.DelTap(id)
+func (s *Server) reap(id int) {
+	err := s.flow.Detach(firevm.TapName(id))
+	if err != nil {
+		slog.Error("failed to detach flow monitor", "id", id, "err", err)
+	}
+
+	err = firevm.DelTap(id)
 	if err != nil {
 		slog.Error("failed to remove TAP", "id", id, "err", err)
 	}

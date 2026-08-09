@@ -9,7 +9,6 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"net"
 	"os"
@@ -118,32 +117,8 @@ func printStats(m *flow.Monitor, label map[uint32]string) {
 		if s.Egress {
 			dir = "out"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s:%d\t%s:%d\t%s\t%d\t%d\n", name, proto(s.Proto), ipv4(s.SrcAddr), port(s.SrcPort), ipv4(s.DstAddr), port(s.DstPort), dir, s.Packets, s.Bytes)
+		fmt.Fprintf(tw, "%s\t%s\t%s:%d\t%s:%d\t%s\t%d\t%d\n", name, flow.Proto(s.Proto), flow.IPv4(s.SrcAddr), flow.Port(s.SrcPort), flow.IPv4(s.DstAddr), flow.Port(s.DstPort), dir, s.Packets, s.Bytes)
 	}
 	tw.Flush()
 	fmt.Println()
-}
-
-// __be16 port field -> host-order port number
-func port(v uint16) uint16 {
-	var b [2]byte
-	binary.NativeEndian.PutUint16(b[:], v) // recover the on-wire (network) bytes
-	return binary.BigEndian.Uint16(b[:])   // read them big-endian => host value
-}
-
-// __be32 address field -> net.IP
-func ipv4(v uint32) net.IP {
-	var b [4]byte
-	binary.NativeEndian.PutUint32(b[:], v) // network-order bytes...
-	return net.IP(b[:])                    // ...which is exactly what net.IP wants
-}
-
-func proto(p uint8) string {
-	if p == 6 {
-		return "TCP"
-	}
-	if p == 17 {
-		return "UDP"
-	}
-	return "UNK"
 }

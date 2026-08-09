@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 ID ?= 0
 
-.PHONY: setup deps initramfs build bpf net-up net-down daemon run stop list flowmon clean distclean
+.PHONY: setup deps initramfs build bpf net-up net-down daemon run stop list flowmon e2e clean distclean
 
 ## fetch binaries, build initramfs, eBPF objects, and CLIs
 setup: deps initramfs bpf build
@@ -52,6 +52,10 @@ list:
 ## attach the eBPF flow monitor to a VM: make flowmon ID=0
 flowmon: build
 	@sudo bin/flowmon $(ID)
+
+## end-to-end smoke test: two VMs talk, assert the flow shows in /stats (sudo)
+e2e: build
+	@sudo scripts/e2e_test.sh
 
 ## stop VMs, remove taps and bridge, clear run files (requires sudo)
 clean:

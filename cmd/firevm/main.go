@@ -83,6 +83,11 @@ func main() {
 				Usage:  "list running VMs",
 				Action: func(context.Context, *cli.Command) error { return list() },
 			},
+			{
+				Name:   "stats",
+				Usage:  "print per-VM traffic counters",
+				Action: func(context.Context, *cli.Command) error { return stats() },
+			},
 		},
 	}
 
@@ -191,6 +196,38 @@ func list() error {
 	fmt.Fprintln(tw, "ID\tNAME\tIP\tPID")
 	for _, s := range states {
 		fmt.Fprintf(tw, "%d\t%s\t%s\t%d\n", s.ID, s.Name, s.GuestIP, s.Pid)
+	}
+	tw.Flush()
+	return nil
+}
+
+// stats prints the per-VM flow counters firevmd is tracking.
+func stats() error {
+	resp, err := request(http.MethodGet, "/stats", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("stats failed (%s): %s", resp.Status, bytes.TrimSpace(b))
+	}
+
+	var flows []api.FlowStat
+	if err := json.NewDecoder(resp.Body).Decode(&flows); err != nil {
+		return err
+	}
+	if len(flows) == 0 {
+		fmt.Println("no flows")
+		return nil
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "VM\tPROTO\tSRC\tDST\tDIR\tPACKETS\tBYTES")
+	for _, f := range flows {
+		fmt.Fprintf(tw, "%s\t%s\t%s:%d\t%s:%d\t%s\t%d\t%d\n",
+			f.VM, f.Proto, f.SrcIP, f.SrcPort, f.DstIP, f.DstPort, f.Dir, f.Packets, f.Bytes)
 	}
 	tw.Flush()
 	return nil
